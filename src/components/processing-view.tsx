@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Task, ContactSheet, Transcription, AnalysisResult } from '@/lib/types';
+import { Task, ContactSheet, Transcription, AnalysisResult, ConversationMessage } from '@/lib/types';
 import { useAppStore } from '@/lib/store';
 import { extractContactSheets } from '@/lib/contact-sheet';
 import { Card } from '@/components/ui/card';
@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils';
 interface ProcessingViewProps {
   videoBlob: Blob;
   task: Task;
+  conversationLog?: ConversationMessage[]; // For interactive scenarios
   onComplete: (sessionId: string) => void;
   onRetry: () => void;
 }
@@ -33,7 +34,7 @@ interface StepStatus {
   error?: string;
 }
 
-export function ProcessingView({ videoBlob, task, onComplete, onRetry }: ProcessingViewProps) {
+export function ProcessingView({ videoBlob, task, conversationLog, onComplete, onRetry }: ProcessingViewProps) {
   const { currentSession, updateCurrentSession } = useAppStore();
   
   const [steps, setSteps] = useState<Record<ProcessingStep, StepStatus>>({
@@ -73,27 +74,47 @@ export function ProcessingView({ videoBlob, task, onComplete, onRetry }: Process
         setContactSheets(sheets);
         updateStep('frames', { status: 'complete', progress: 100 });
         
-        // Step 2: Transcribe audio
-        updateStep('transcription', { status: 'processing' });
+        // Step 2: Transcribe audio (skip for interactive scenarios - we have the conversation log)
+        let transcriptionData = null;
         
-        const formData = new FormData();
-        formData.append('audio', videoBlob, 'recording.webm');
-        
-        const transcribeResponse = await fetch('/api/transcribe', {
-          method: 'POST',
-          body: formData,
-        });
-        
-        if (!transcribeResponse.ok) {
-          throw new Error('Transcription failed');
+        if (conversationLog && conversationLog.length > 0) {
+          // For interactive scenarios, use conversation log directly
+          // NO word-level estimation - only accurate turn-level timestamps
+          updateStep('transcription', { status: 'processing' });
+          
+          transcriptionData = {
+            text: conversationLog.map(msg => 
+              `${msg.role === 'assistant' ? '[AI]' : '[User]'}: ${msg.content}`
+            ).join('\n'),
+            words: [], // No word-level data - we only have turn-level timestamps
+            turns: conversationLog, // Pass the actual turn data
+          };
+          
+          updateStep('transcription', { status: 'complete' });
+        } else {
+          // For standard recordings, use Whisper
+          updateStep('transcription', { status: 'processing' });
+          
+          const formData = new FormData();
+          formData.append('audio', videoBlob, 'recording.webm');
+          
+          const transcribeResponse = await fetch('/api/transcribe', {
+            method: 'POST',
+            body: formData,
+          });
+          
+          if (!transcribeResponse.ok) {
+            throw new Error('Transcription failed');
+          }
+          
+          transcriptionData = await transcribeResponse.json();
+          
+          if (cancelled) return;
+          
+          updateStep('transcription', { status: 'complete' });
         }
         
-        const transcriptionData = await transcribeResponse.json();
-        
-        if (cancelled) return;
-        
         setTranscription(transcriptionData);
-        updateStep('transcription', { status: 'complete' });
         
         // Step 3: Analyze with AI
         updateStep('analysis', { status: 'processing' });
@@ -109,8 +130,10 @@ export function ProcessingView({ videoBlob, task, onComplete, onRetry }: Process
               frameTimestamps: s.frameTimestamps,
             })),
             transcription: transcriptionData,
+            conversationLog: conversationLog,
             rubric: task.rubric,
             taskTitle: task.title,
+            isInteractive: task.interactive,
           }),
         });
         
@@ -177,8 +200,10 @@ export function ProcessingView({ videoBlob, task, onComplete, onRetry }: Process
     {
       id: 'transcription' as ProcessingStep,
       icon: AudioLines,
-      label: 'Transcribing audio',
-      description: 'Converting speech to text with timestamps',
+      label: conversationLog ? 'Processing conversation' : 'Transcribing audio',
+      description: conversationLog 
+        ? 'Using conversation log from live session' 
+        : 'Converting speech to text with timestamps',
     },
     {
       id: 'analysis' as ProcessingStep,

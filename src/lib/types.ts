@@ -6,6 +6,14 @@ export interface Task {
   rubric: string;
   icon: 'presentation' | 'dilemma' | 'custom';
   color: string;
+  interactive?: boolean; // If true, uses realtime voice agent
+}
+
+// Conversation message for interactive scenarios
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
 }
 
 // Feedback from AI
@@ -46,6 +54,7 @@ export interface RecordingSession {
   videoBlob?: Blob;
   videoUrl?: string;
   transcription?: Transcription;
+  conversationLog?: ConversationMessage[]; // For interactive scenarios
   analysis?: AnalysisResult;
   status: 'recording' | 'processing' | 'analyzing' | 'complete' | 'error';
   error?: string;
@@ -115,9 +124,10 @@ Use these prompts to guide your talk:
   {
     id: 'dilemma',
     title: 'The Credit Taker',
-    description: 'Respond to a workplace dilemma where a colleague takes credit for your work',
+    description: 'Have a live conversation with Alex, a coworker who just took credit for your work',
     icon: 'dilemma',
     color: 'from-amber-500/20 to-orange-500/20',
+    interactive: true, // This scenario uses realtime voice agent
     rubric: `# Workplace Dilemma: The Credit Taker
 
 ## Scenario

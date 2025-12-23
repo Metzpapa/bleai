@@ -81,6 +81,11 @@ export function TaskCard({ task, onStart, onEdit, delay = 0 }: TaskCardProps) {
             <span className="px-2 py-1 rounded-md bg-secondary/50">
               {task.icon === 'presentation' ? '20 pts' : '20 pts'}
             </span>
+            {task.interactive && (
+              <span className="px-2 py-1 rounded-md bg-primary/20 text-primary">
+                🎙️ Live AI
+              </span>
+            )}
           </div>
         </div>
       </div>

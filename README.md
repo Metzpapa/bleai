@@ -118,12 +118,13 @@ A 5-minute leadership presentation based on the BLE III curriculum. Evaluates:
 - Presentation style (engagement, confidence, authenticity)
 - Delivery (eye contact, voice, body language)
 
-### 2. The Credit Taker (Workplace Dilemma)
-A scenario-based response evaluating:
+### 2. The Credit Taker (Interactive Scenario) 🎙️
+**Live AI conversation!** Talk to "Alex", a coworker who just took credit for your work. Uses OpenAI's Realtime API for natural, real-time dialogue. Evaluates:
 - Emotional intelligence
 - Communication skills
 - Problem-solving
-- Professionalism
+- Conflict resolution
+- Professionalism under pressure
 
 ### 3. Custom Tasks
 Create your own by pasting any rubric!
@@ -135,6 +136,7 @@ Create your own by pasting any rubric!
 - **State**: Zustand
 - **Transcription**: OpenAI Whisper API
 - **Vision AI**: Google Gemini 3 Flash (via OpenRouter)
+- **Voice Agent**: OpenAI Realtime API (for interactive scenarios)
 - **Video**: Browser MediaRecorder API
 
 ## Project Structure

@@ -3,6 +3,12 @@ import { NextRequest, NextResponse } from 'next/server';
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const MODEL = 'google/gemini-3-flash-preview';
 
+interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
+}
+
 interface AnalyzeRequest {
   contactSheets: {
     timestamp: number;
@@ -12,16 +18,19 @@ interface AnalyzeRequest {
   }[];
   transcription: {
     text: string;
-    words: { word: string; start: number; end: number }[];
+    words?: { word: string; start: number; end: number }[];
+    turns?: ConversationMessage[]; // For interactive scenarios - turn-level timestamps only
   };
+  conversationLog?: ConversationMessage[];
   rubric: string;
   taskTitle: string;
+  isInteractive?: boolean;
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: AnalyzeRequest = await request.json();
-    const { contactSheets, transcription, rubric, taskTitle } = body;
+    const { contactSheets, transcription, conversationLog, rubric, taskTitle, isInteractive } = body;
     
     if (!OPENROUTER_API_KEY) {
       return NextResponse.json(
@@ -31,20 +40,81 @@ export async function POST(request: NextRequest) {
     }
     
     // Build the prompt with transcription and timing info
-    const transcriptWithTimestamps = transcription.words
-      .reduce((acc: string[], word, i) => {
-        // Add timestamp every 10 words or at start
-        if (i % 10 === 0) {
-          const mins = Math.floor(word.start / 60);
-          const secs = (word.start % 60).toFixed(1);
-          acc.push(`[${mins}:${secs.padStart(4, '0')}]`);
-        }
-        acc.push(word.word);
-        return acc;
-      }, [])
-      .join(' ');
+    let transcriptWithTimestamps: string;
     
-    const systemPrompt = `You are an expert presentation coach and soft skills evaluator. You analyze video presentations and provide detailed, constructive feedback.
+    if (isInteractive && transcription.turns && transcription.turns.length > 0) {
+      // For interactive scenarios: use turn-level timestamps (accurate)
+      transcriptWithTimestamps = transcription.turns.map(turn => {
+        const mins = Math.floor(turn.timestamp / 60);
+        const secs = (turn.timestamp % 60).toFixed(1);
+        const speaker = turn.role === 'assistant' ? 'Alex' : 'User';
+        return `[${mins}:${secs.padStart(4, '0')}] ${speaker}: ${turn.content}`;
+      }).join('\n');
+    } else if (transcription.words && transcription.words.length > 0) {
+      // For standard recordings: use word-level timestamps from Whisper
+      transcriptWithTimestamps = transcription.words
+        .reduce((acc: string[], word, i) => {
+          // Add timestamp every 10 words or at start
+          if (i % 10 === 0) {
+            const mins = Math.floor(word.start / 60);
+            const secs = (word.start % 60).toFixed(1);
+            acc.push(`[${mins}:${secs.padStart(4, '0')}]`);
+          }
+          acc.push(word.word);
+          return acc;
+        }, [])
+        .join(' ');
+    } else {
+      // Fallback: just use the text
+      transcriptWithTimestamps = transcription.text;
+    }
+    
+    // Different system prompts for interactive vs standard
+    const systemPrompt = isInteractive 
+      ? `You are an expert soft skills coach specializing in workplace communication and conflict resolution. You analyze recorded conversations and provide detailed, constructive feedback.
+
+Your task is to evaluate an interactive conversation scenario based on the provided rubric. You will receive:
+1. Contact sheets (image grids) showing frames from the video at different timestamps
+2. The conversation transcript between the user and an AI character
+3. Audio transcription of what the user said
+4. The evaluation rubric
+
+Analyze:
+- How the user handled the difficult conversation
+- Their communication style, tone, and word choices
+- Body language, facial expressions, and composure (from video)
+- Problem-solving approach and conflict resolution skills
+- Emotional intelligence and empathy demonstrated
+- Professionalism and assertiveness balance
+
+IMPORTANT: When providing feedback, reference specific timestamps so the user can review those moments.
+
+You MUST respond with valid JSON in this exact format:
+{
+  "overallScore": <number 0-100>,
+  "summary": "<2-3 sentence overall assessment of how they handled the scenario>",
+  "strengths": ["<strength 1>", "<strength 2>", ...],
+  "areasForImprovement": ["<area 1>", "<area 2>", ...],
+  "feedback": [
+    {
+      "id": "<unique id>",
+      "startTime": <seconds>,
+      "endTime": <seconds>,
+      "category": "<positive|improvement|critical>",
+      "title": "<short title>",
+      "feedback": "<detailed feedback>",
+      "suggestion": "<optional actionable suggestion>"
+    }
+  ]
+}
+
+Categories:
+- "positive": Something done well - good communication technique, appropriate response
+- "improvement": Could be handled better - missed opportunity, slightly off tone
+- "critical": Significant issue - unprofessional, escalating, or ineffective approach
+
+Provide 5-10 feedback items, covering different moments in the conversation.`
+      : `You are an expert presentation coach and soft skills evaluator. You analyze video presentations and provide detailed, constructive feedback.
 
 Your task is to evaluate a presentation based on the provided rubric. You will receive:
 1. Contact sheets (image grids) showing frames from the video at different timestamps
@@ -81,18 +151,30 @@ Categories:
 
 Provide 5-10 feedback items, covering different aspects and timestamps throughout the presentation.`;
 
+    // Build conversation log section for interactive scenarios
+    let conversationSection = '';
+    if (isInteractive && conversationLog && conversationLog.length > 0) {
+      conversationSection = `\n## Conversation Log
+${conversationLog.map(msg => {
+  const mins = Math.floor(msg.timestamp / 60);
+  const secs = (msg.timestamp % 60).toFixed(1);
+  const speaker = msg.role === 'assistant' ? 'Alex (AI Character)' : 'User';
+  return `[${mins}:${secs.padStart(4, '0')}] ${speaker}: ${msg.content}`;
+}).join('\n')}`;
+    }
+
     const userPrompt = `# Task: ${taskTitle}
 
 ## Rubric
 ${rubric}
-
-## Transcription with Timestamps
+${conversationSection}
+## Audio Transcription with Timestamps
 ${transcriptWithTimestamps}
 
-## Full Transcript
+## Full Audio Transcript
 ${transcription.text}
 
-Please analyze this presentation and provide your evaluation in the JSON format specified.`;
+Please analyze this ${isInteractive ? 'conversation' : 'presentation'} and provide your evaluation in the JSON format specified.`;
 
     // Build messages with images
     const imageContent = contactSheets.map((sheet, i) => ({
@@ -178,4 +260,3 @@ Please analyze this presentation and provide your evaluation in the JSON format 
     );
   }
 }
-
