@@ -1,36 +1,167 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# BLE Skills Analyzer
 
-## Getting Started
+AI-powered soft skills analysis for presentations and workplace scenarios. Record yourself, get detailed feedback with timestamps.
 
-First, run the development server:
+![BLE Skills Analyzer](https://img.shields.io/badge/Next.js-15-black?style=flat-square&logo=next.js)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?style=flat-square&logo=typescript)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-38bdf8?style=flat-square&logo=tailwindcss)
+
+## Features
+
+- **Video Recording** - Record presentations directly in browser
+- **Contact Sheet Extraction** - Automatically samples frames for visual analysis
+- **Word-Level Transcription** - OpenAI Whisper with precise timestamps
+- **AI Analysis** - Gemini 3 Flash analyzes content, delivery, and body language
+- **Timestamped Feedback** - Click feedback items to jump to relevant video moments
+- **Guided Review Mode** - Step through feedback one by one
+- **Custom Rubrics** - Create your own evaluation criteria
+
+## Quick Start
+
+### 1. Clone and Install
+
+```bash
+git clone <your-repo>
+cd bleai
+npm install
+```
+
+### 2. Set Up Environment Variables
+
+Copy the example env file and add your API keys:
+
+```bash
+cp .env.example .env.local
+```
+
+Edit `.env.local`:
+
+```env
+OPENAI_API_KEY=sk-your-openai-api-key
+OPENROUTER_API_KEY=sk-or-your-openrouter-api-key
+```
+
+### 3. Run Development Server
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Deployment on Railway
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Push your code to GitHub
+2. Connect Railway to your repo
+3. Add environment variables in Railway dashboard:
+   - `OPENAI_API_KEY`
+   - `OPENROUTER_API_KEY`
+   - `NEXT_PUBLIC_APP_URL` (your Railway URL)
+4. Deploy!
 
-## Learn More
+## How It Works
 
-To learn more about Next.js, take a look at the following resources:
+### Video Processing Pipeline
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```
+Video Recording
+      │
+      ▼
+┌─────────────────────────────────────┐
+│ 1. Frame Extraction                 │
+│    - Sample every 0.5-1.5 seconds   │
+│    - Create 3x3 contact sheets      │
+│    - Max 50 sheets per video        │
+└─────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────┐
+│ 2. Audio Transcription              │
+│    - OpenAI Whisper API             │
+│    - Word-level timestamps          │
+└─────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────┐
+│ 3. AI Analysis                      │
+│    - Gemini 3 Flash via OpenRouter  │
+│    - Visual + verbal analysis       │
+│    - Rubric-based evaluation        │
+└─────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────┐
+│ 4. Feedback Review                  │
+│    - Interactive video player       │
+│    - Timeline markers               │
+│    - Guided mode for step-by-step   │
+└─────────────────────────────────────┘
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Contact Sheet Strategy
 
-## Deploy on Vercel
+Instead of sending individual frames, we create contact sheets (3x3 grids of frames) to:
+- Reduce API calls and costs
+- Provide temporal context to the AI
+- Keep token usage manageable
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+For a 5-minute video:
+- Sample ~100 frames
+- Group into ~11 contact sheets
+- Each sheet shows 4.5 seconds of footage
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Pre-built Tasks
+
+### 1. TED Talk Presentation
+A 5-minute leadership presentation based on the BLE III curriculum. Evaluates:
+- Content (habits, grit, everyday leadership)
+- Presentation style (engagement, confidence, authenticity)
+- Delivery (eye contact, voice, body language)
+
+### 2. The Credit Taker (Workplace Dilemma)
+A scenario-based response evaluating:
+- Emotional intelligence
+- Communication skills
+- Problem-solving
+- Professionalism
+
+### 3. Custom Tasks
+Create your own by pasting any rubric!
+
+## Tech Stack
+
+- **Framework**: Next.js 15 (App Router)
+- **UI**: shadcn/ui + Tailwind CSS v4
+- **State**: Zustand
+- **Transcription**: OpenAI Whisper API
+- **Vision AI**: Google Gemini 3 Flash (via OpenRouter)
+- **Video**: Browser MediaRecorder API
+
+## Project Structure
+
+```
+src/
+├── app/
+│   ├── page.tsx              # Dashboard
+│   ├── record/[taskId]/      # Recording flow
+│   ├── review/[sessionId]/   # Feedback review
+│   └── api/
+│       ├── transcribe/       # Whisper endpoint
+│       └── analyze/          # OpenRouter endpoint
+├── components/
+│   ├── ui/                   # shadcn components
+│   ├── task-card.tsx         # Task selection cards
+│   ├── task-editor.tsx       # Rubric editor dialog
+│   ├── video-recorder.tsx    # Recording component
+│   ├── processing-view.tsx   # Processing pipeline UI
+│   └── feedback-review.tsx   # Video + feedback player
+└── lib/
+    ├── types.ts              # TypeScript types
+    ├── store.ts              # Zustand store
+    ├── contact-sheet.ts      # Frame extraction
+    └── utils.ts              # Utilities
+```
+
+## License
+
+MIT
