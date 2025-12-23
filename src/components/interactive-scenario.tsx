@@ -31,6 +31,16 @@ interface ConversationMessage {
 
 type ScenarioPhase = 'intro' | 'connecting' | 'conversation' | 'ending';
 
+const getSupportedMimeType = () => {
+  if (typeof MediaRecorder === 'undefined') return '';
+  const types = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+  ];
+  return types.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+};
+
 // Extract character info from task
 function getScenarioCharacter(task: Task): { name: string; personality: string } {
   // Default character for "The Credit Taker" scenario
@@ -117,6 +127,32 @@ export function InteractiveScenario({ task, onComplete, onCancel }: InteractiveS
       clearInterval(durationIntervalRef.current);
     }
   }, []);
+
+  const attachStreamToPreview = useCallback(() => {
+    if (!videoRef.current || !streamRef.current) {
+      console.debug('[interactive] preview attach skipped', {
+        hasVideo: !!videoRef.current,
+        hasStream: !!streamRef.current,
+      });
+      return;
+    }
+
+    console.debug('[interactive] attaching stream to preview', {
+      tracks: streamRef.current.getTracks().map((track) => track.kind),
+    });
+    videoRef.current.srcObject = streamRef.current;
+    videoRef.current.onloadedmetadata = () => {
+      videoRef.current?.play().catch((err) => {
+        console.warn('[interactive] preview play failed', err);
+      });
+    };
+  }, []);
+
+  useEffect(() => {
+    if (phase === 'conversation') {
+      attachStreamToPreview();
+    }
+  }, [attachStreamToPreview, phase]);
   
   const startConversation = async () => {
     setPhase('connecting');
@@ -146,18 +182,28 @@ export function InteractiveScenario({ task, onComplete, onCancel }: InteractiveS
       });
       
       streamRef.current = stream;
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play().catch(() => {});
-        };
-      }
+      console.debug('[interactive] getUserMedia success', {
+        tracks: stream.getTracks().map((track) => track.kind),
+      });
+      attachStreamToPreview();
       
       // 3. Set up recording
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp9,opus',
-      });
+      if (typeof MediaRecorder === 'undefined') {
+        throw new Error('Recording is not supported in this browser. Please try Chrome or Edge.');
+      }
+      
+      recordingChunksRef.current = [];
+      const mimeType = getSupportedMimeType();
+      let mediaRecorder: MediaRecorder;
+      
+      try {
+        mediaRecorder = mimeType
+          ? new MediaRecorder(stream, { mimeType })
+          : new MediaRecorder(stream);
+      } catch (err) {
+        console.error('Failed to start recording:', err);
+        throw new Error('Failed to start recording. Please try a different browser.');
+      }
       
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
@@ -257,7 +303,8 @@ export function InteractiveScenario({ task, onComplete, onCancel }: InteractiveS
     // Stop recording and get the blob
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.onstop = () => {
-        const blob = new Blob(recordingChunksRef.current, { type: 'video/webm' });
+        const recordingType = mediaRecorderRef.current?.mimeType || 'video/webm';
+        const blob = new Blob(recordingChunksRef.current, { type: recordingType });
         
         // Stop camera
         if (streamRef.current) {
@@ -462,4 +509,3 @@ export function InteractiveScenario({ task, onComplete, onCancel }: InteractiveS
     </Card>
   );
 }
-

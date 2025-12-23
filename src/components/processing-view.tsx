@@ -36,6 +36,7 @@ interface StepStatus {
 
 export function ProcessingView({ videoBlob, task, conversationLog, onComplete, onRetry }: ProcessingViewProps) {
   const { currentSession, updateCurrentSession } = useAppStore();
+  const isInteractive = task.interactive;
   
   const [steps, setSteps] = useState<Record<ProcessingStep, StepStatus>>({
     frames: { status: 'pending' },
@@ -60,60 +61,75 @@ export function ProcessingView({ videoBlob, task, conversationLog, onComplete, o
     
     const process = async () => {
       try {
-        // Step 1: Extract contact sheets
-        updateStep('frames', { status: 'processing', progress: 0 });
+        // Start transcription immediately (in parallel with frame extraction)
+        let transcriptionPromise: Promise<Transcription | null>;
         
-        const sheets = await extractContactSheets(videoBlob, (progress) => {
-          if (!cancelled) {
-            updateStep('frames', { progress: progress * 100 });
-          }
-        });
-        
-        if (cancelled) return;
-        
-        setContactSheets(sheets);
-        updateStep('frames', { status: 'complete', progress: 100 });
-        
-        // Step 2: Transcribe audio (skip for interactive scenarios - we have the conversation log)
-        let transcriptionData = null;
-        
-        if (conversationLog && conversationLog.length > 0) {
+        if (isInteractive) {
           // For interactive scenarios, use conversation log directly
           // NO word-level estimation - only accurate turn-level timestamps
           updateStep('transcription', { status: 'processing' });
           
-          transcriptionData = {
-            text: conversationLog.map(msg => 
+          if (!conversationLog || conversationLog.length === 0) {
+            console.warn('[processing] interactive session has no conversation log; skipping Whisper');
+          }
+
+          const transcriptionData = {
+            text: (conversationLog ?? []).map(msg => 
               `${msg.role === 'assistant' ? '[AI]' : '[User]'}: ${msg.content}`
             ).join('\n'),
             words: [], // No word-level data - we only have turn-level timestamps
-            turns: conversationLog, // Pass the actual turn data
+            turns: conversationLog ?? [], // Pass the actual turn data
           };
           
           updateStep('transcription', { status: 'complete' });
+          transcriptionPromise = Promise.resolve(transcriptionData);
         } else {
           // For standard recordings, use Whisper
           updateStep('transcription', { status: 'processing' });
           
-          const formData = new FormData();
-          formData.append('audio', videoBlob, 'recording.webm');
-          
-          const transcribeResponse = await fetch('/api/transcribe', {
-            method: 'POST',
-            body: formData,
-          });
-          
-          if (!transcribeResponse.ok) {
-            throw new Error('Transcription failed');
-          }
-          
-          transcriptionData = await transcribeResponse.json();
-          
-          if (cancelled) return;
-          
-          updateStep('transcription', { status: 'complete' });
+          transcriptionPromise = (async () => {
+            const formData = new FormData();
+            formData.append('audio', videoBlob, 'recording.webm');
+            
+            const transcribeResponse = await fetch('/api/transcribe', {
+              method: 'POST',
+              body: formData,
+            });
+            
+            if (!transcribeResponse.ok) {
+              throw new Error('Transcription failed');
+            }
+            
+            const transcriptionData = await transcribeResponse.json();
+            
+            if (cancelled) return null;
+            
+            updateStep('transcription', { status: 'complete' });
+            return transcriptionData;
+          })();
         }
         
+        // Extract contact sheets in parallel
+        updateStep('frames', { status: 'processing', progress: 0 });
+        
+        const framesPromise = (async () => {
+          const sheets = await extractContactSheets(videoBlob, (progress) => {
+            if (!cancelled) {
+              updateStep('frames', { progress: progress * 100 });
+            }
+          });
+          
+          if (cancelled) return null;
+          
+          updateStep('frames', { status: 'complete', progress: 100 });
+          return sheets;
+        })();
+        
+        const [sheets, transcriptionData] = await Promise.all([framesPromise, transcriptionPromise]);
+        
+        if (cancelled || !sheets || !transcriptionData) return;
+        
+        setContactSheets(sheets);
         setTranscription(transcriptionData);
         
         // Step 3: Analyze with AI
@@ -188,7 +204,7 @@ export function ProcessingView({ videoBlob, task, conversationLog, onComplete, o
     return () => {
       cancelled = true;
     };
-  }, [videoBlob, task]);
+  }, [videoBlob, task, conversationLog, isInteractive]);
   
   const stepConfig = [
     {
@@ -200,8 +216,8 @@ export function ProcessingView({ videoBlob, task, conversationLog, onComplete, o
     {
       id: 'transcription' as ProcessingStep,
       icon: AudioLines,
-      label: conversationLog ? 'Processing conversation' : 'Transcribing audio',
-      description: conversationLog 
+      label: isInteractive ? 'Processing conversation' : 'Transcribing audio',
+      description: isInteractive
         ? 'Using conversation log from live session' 
         : 'Converting speech to text with timestamps',
     },
@@ -321,5 +337,3 @@ export function ProcessingView({ videoBlob, task, conversationLog, onComplete, o
     </Card>
   );
 }
-
-

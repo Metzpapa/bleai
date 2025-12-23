@@ -21,6 +21,16 @@ interface VideoRecorderProps {
   maxDuration?: number; // seconds
 }
 
+const getSupportedMimeType = () => {
+  if (typeof MediaRecorder === 'undefined') return '';
+  const types = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+  ];
+  return types.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+};
+
 export function VideoRecorder({ 
   onRecordingComplete, 
   onCancel,
@@ -94,12 +104,24 @@ export function VideoRecorder({
   
   const startRecording = useCallback(() => {
     if (!streamRef.current) return;
+    if (typeof MediaRecorder === 'undefined') {
+      setError('Recording is not supported in this browser. Please try Chrome or Edge.');
+      return;
+    }
     
     chunksRef.current = [];
+    const mimeType = getSupportedMimeType();
+    let mediaRecorder: MediaRecorder;
     
-    const mediaRecorder = new MediaRecorder(streamRef.current, {
-      mimeType: 'video/webm;codecs=vp9,opus'
-    });
+    try {
+      mediaRecorder = mimeType
+        ? new MediaRecorder(streamRef.current, { mimeType })
+        : new MediaRecorder(streamRef.current);
+    } catch (err) {
+      console.error('Failed to start recording:', err);
+      setError('Failed to start recording. Please try a different browser.');
+      return;
+    }
     
     mediaRecorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
@@ -108,10 +130,17 @@ export function VideoRecorder({
     };
     
     mediaRecorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+      const recordingType = mediaRecorder.mimeType || mimeType || 'video/webm';
+      const blob = new Blob(chunksRef.current, { type: recordingType });
       const url = URL.createObjectURL(blob);
       setRecordedBlob(blob);
       setRecordedUrl(url);
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+        videoRef.current.src = url;
+        videoRef.current.load();
+      }
     };
     
     mediaRecorderRef.current = mediaRecorder;
@@ -304,5 +333,3 @@ export function VideoRecorder({
     </div>
   );
 }
-
-
