@@ -18,81 +18,163 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+// Target sample rate for transcription (Whisper works great with 16kHz)
+const TARGET_SAMPLE_RATE = 16000;
+
 /**
- * Extract audio from a video blob to reduce file size for transcription.
- * Falls back to original blob if extraction fails.
+ * Extract audio from a video blob, optimized for transcription:
+ * - Converts to mono (speech doesn't need stereo)
+ * - Downsamples to 16kHz (Whisper's native rate)
+ * - Compresses to WebM/Opus (browser-native, very efficient)
+ * 
+ * This can reduce a 50MB video to under 1MB of audio.
  */
 async function extractAudioFromVideo(videoBlob: Blob): Promise<Blob> {
-  return new Promise((resolve) => {
+  const videoSizeMB = (videoBlob.size / 1024 / 1024).toFixed(2);
+  console.log('[audio] Starting extraction from', videoSizeMB, 'MB video');
+  
+  try {
+    // Step 1: Decode audio from video
+    const arrayBuffer = await videoBlob.arrayBuffer();
+    const audioContext = new AudioContext();
+    const originalBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    
+    console.log('[audio] Decoded:', originalBuffer.duration.toFixed(1), 'seconds,', 
+      originalBuffer.numberOfChannels, 'channels,', originalBuffer.sampleRate, 'Hz');
+    
+    // Step 2: Resample to 16kHz mono using OfflineAudioContext
+    const duration = originalBuffer.duration;
+    const offlineContext = new OfflineAudioContext(
+      1, // mono
+      Math.ceil(duration * TARGET_SAMPLE_RATE),
+      TARGET_SAMPLE_RATE
+    );
+    
+    const source = offlineContext.createBufferSource();
+    source.buffer = originalBuffer;
+    source.connect(offlineContext.destination);
+    source.start();
+    
+    const resampledBuffer = await offlineContext.startRendering();
+    await audioContext.close();
+    
+    console.log('[audio] Resampled to:', resampledBuffer.sampleRate, 'Hz mono');
+    
+    // Step 3: Try to encode as compressed WebM/Opus, fall back to WAV
+    let compressedBlob: Blob;
+    
     try {
-      const video = document.createElement('video');
-      const videoUrl = URL.createObjectURL(videoBlob);
-      
-      video.onloadedmetadata = async () => {
-        try {
-          const audioContext = new AudioContext();
-          const response = await fetch(videoUrl);
-          const arrayBuffer = await response.arrayBuffer();
-          
-          // Decode the audio from the video
-          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-          
-          // Create an offline context to render the audio
-          const offlineContext = new OfflineAudioContext(
-            audioBuffer.numberOfChannels,
-            audioBuffer.length,
-            audioBuffer.sampleRate
-          );
-          
-          const source = offlineContext.createBufferSource();
-          source.buffer = audioBuffer;
-          source.connect(offlineContext.destination);
-          source.start();
-          
-          const renderedBuffer = await offlineContext.startRendering();
-          
-          // Convert to WAV format (smaller than webm for audio-only)
-          const wavBlob = audioBufferToWav(renderedBuffer);
-          
-          URL.revokeObjectURL(videoUrl);
-          audioContext.close();
-          
-          console.log('[processing] Extracted audio:', (wavBlob.size / 1024 / 1024).toFixed(2), 'MB (from', (videoBlob.size / 1024 / 1024).toFixed(2), 'MB video)');
-          resolve(wavBlob);
-        } catch (err) {
-          console.warn('[processing] Audio extraction failed, using original:', err);
-          URL.revokeObjectURL(videoUrl);
-          resolve(videoBlob);
-        }
-      };
-      
-      video.onerror = () => {
-        console.warn('[processing] Video load failed, using original blob');
-        URL.revokeObjectURL(videoUrl);
-        resolve(videoBlob);
-      };
-      
-      video.src = videoUrl;
+      compressedBlob = await encodeAsWebmOpus(resampledBuffer);
+      console.log('[audio] Compressed to WebM/Opus:', (compressedBlob.size / 1024).toFixed(1), 'KB');
     } catch (err) {
-      console.warn('[processing] Audio extraction setup failed:', err);
-      resolve(videoBlob);
+      console.warn('[audio] WebM encoding failed, using WAV:', err);
+      compressedBlob = audioBufferToWav(resampledBuffer);
+      console.log('[audio] Encoded as WAV:', (compressedBlob.size / 1024).toFixed(1), 'KB');
+    }
+    
+    const finalSizeMB = (compressedBlob.size / 1024 / 1024).toFixed(2);
+    const compressionRatio = (videoBlob.size / compressedBlob.size).toFixed(1);
+    console.log('[audio] Final:', finalSizeMB, 'MB (', compressionRatio, 'x compression from video)');
+    
+    return compressedBlob;
+    
+  } catch (err) {
+    console.error('[audio] Extraction failed, using original:', err);
+    return videoBlob;
+  }
+}
+
+/**
+ * Encode an AudioBuffer as WebM/Opus using MediaRecorder.
+ * This provides excellent compression for speech (~50KB/minute).
+ */
+async function encodeAsWebmOpus(buffer: AudioBuffer): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    try {
+      // Create an audio context to play the buffer into MediaRecorder
+      const audioContext = new AudioContext({ sampleRate: buffer.sampleRate });
+      const dest = audioContext.createMediaStreamDestination();
+      
+      // Create a buffer source and connect to the stream destination
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(dest);
+      
+      // Set up MediaRecorder with opus codec
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : 'audio/ogg';
+      
+      const mediaRecorder = new MediaRecorder(dest.stream, { 
+        mimeType,
+        audioBitsPerSecond: 32000, // 32kbps is plenty for speech
+      });
+      
+      const chunks: Blob[] = [];
+      
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+      
+      mediaRecorder.onstop = () => {
+        audioContext.close();
+        const blob = new Blob(chunks, { type: mimeType });
+        resolve(blob);
+      };
+      
+      mediaRecorder.onerror = (e) => {
+        audioContext.close();
+        reject(e);
+      };
+      
+      // Start recording and play the buffer
+      mediaRecorder.start();
+      source.start();
+      
+      // Stop when the buffer finishes
+      source.onended = () => {
+        // Small delay to ensure all audio is captured
+        setTimeout(() => {
+          mediaRecorder.stop();
+        }, 100);
+      };
+      
+    } catch (err) {
+      reject(err);
     }
   });
 }
 
 /**
- * Convert an AudioBuffer to a WAV Blob
+ * Convert an AudioBuffer to a WAV Blob (fallback if WebM encoding fails)
+ * Optimized for mono 16kHz audio.
  */
 function audioBufferToWav(buffer: AudioBuffer): Blob {
-  const numChannels = buffer.numberOfChannels;
+  const numChannels = 1; // Always mono
   const sampleRate = buffer.sampleRate;
-  const format = 1; // PCM
   const bitDepth = 16;
   
   const bytesPerSample = bitDepth / 8;
   const blockAlign = numChannels * bytesPerSample;
   
-  const dataLength = buffer.length * blockAlign;
+  // Get mono channel data (mix down if needed)
+  let monoData: Float32Array;
+  if (buffer.numberOfChannels === 1) {
+    monoData = buffer.getChannelData(0);
+  } else {
+    // Mix down to mono
+    monoData = new Float32Array(buffer.length);
+    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+      const channelData = buffer.getChannelData(ch);
+      for (let i = 0; i < buffer.length; i++) {
+        monoData[i] += channelData[i] / buffer.numberOfChannels;
+      }
+    }
+  }
+  
+  const dataLength = monoData.length * blockAlign;
   const bufferLength = 44 + dataLength;
   
   const arrayBuffer = new ArrayBuffer(bufferLength);
@@ -109,8 +191,8 @@ function audioBufferToWav(buffer: AudioBuffer): Blob {
   view.setUint32(4, bufferLength - 8, true);
   writeString(8, 'WAVE');
   writeString(12, 'fmt ');
-  view.setUint32(16, 16, true); // fmt chunk size
-  view.setUint16(20, format, true);
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM format
   view.setUint16(22, numChannels, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * blockAlign, true);
@@ -120,19 +202,12 @@ function audioBufferToWav(buffer: AudioBuffer): Blob {
   view.setUint32(40, dataLength, true);
   
   // Write audio data
-  const channels: Float32Array[] = [];
-  for (let i = 0; i < numChannels; i++) {
-    channels.push(buffer.getChannelData(i));
-  }
-  
   let offset = 44;
-  for (let i = 0; i < buffer.length; i++) {
-    for (let ch = 0; ch < numChannels; ch++) {
-      const sample = Math.max(-1, Math.min(1, channels[ch][i]));
-      const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
-      view.setInt16(offset, intSample, true);
-      offset += 2;
-    }
+  for (let i = 0; i < monoData.length; i++) {
+    const sample = Math.max(-1, Math.min(1, monoData[i]));
+    const intSample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+    view.setInt16(offset, intSample, true);
+    offset += 2;
   }
   
   return new Blob([arrayBuffer], { type: 'audio/wav' });
@@ -189,8 +264,18 @@ export function ProcessingView({ videoBlob, task, conversationLog, onComplete, o
           // Extract audio from video to reduce file size (Vercel has 4.5MB limit)
           const audioBlob = await extractAudioFromVideo(videoBlob);
           
+          // Determine correct filename based on audio type
+          let audioFileName = 'audio.webm';
+          if (audioBlob.type === 'audio/wav') {
+            audioFileName = 'audio.wav';
+          } else if (audioBlob.type === 'audio/ogg') {
+            audioFileName = 'audio.ogg';
+          } else if (audioBlob.type.includes('webm') || audioBlob.type.includes('opus')) {
+            audioFileName = 'audio.webm';
+          }
+          
           const formData = new FormData();
-          formData.append('audio', audioBlob, audioBlob.type === 'audio/wav' ? 'audio.wav' : 'recording.webm');
+          formData.append('audio', audioBlob, audioFileName);
           
           const transcribeResponse = await fetch('/api/transcribe', {
             method: 'POST',
