@@ -113,17 +113,6 @@ async function encodeAsWebmOpus(buffer: AudioBuffer): Promise<Blob> {
       });
       
       const chunks: Blob[] = [];
-      let stopped = false;
-      
-      const stopRecording = () => {
-        if (stopped) return;
-        stopped = true;
-        try {
-          mediaRecorder.stop();
-        } catch {
-          // Already stopped
-        }
-      };
       
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunks.push(e.data);
@@ -141,21 +130,15 @@ async function encodeAsWebmOpus(buffer: AudioBuffer): Promise<Blob> {
       };
       
       // Start recording and play the buffer
-      mediaRecorder.start(100); // Collect data every 100ms
+      mediaRecorder.start();
       source.start();
       
-      // Use timeout based on buffer duration (more reliable than onended)
-      const durationMs = (buffer.duration * 1000) + 500; // Add 500ms buffer
-      console.log('[audio] Encoding for', (durationMs / 1000).toFixed(1), 'seconds...');
-      
-      setTimeout(() => {
-        console.log('[audio] Encoding complete, stopping recorder');
-        stopRecording();
-      }, durationMs);
-      
-      // Also listen for onended as backup
+      // Stop when the buffer finishes
       source.onended = () => {
-        setTimeout(stopRecording, 200);
+        // Small delay to ensure all audio is captured
+        setTimeout(() => {
+          mediaRecorder.stop();
+        }, 100);
       };
       
     } catch (err) {
