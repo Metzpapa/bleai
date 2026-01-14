@@ -268,7 +268,12 @@ export function InteractiveScenario({ task, onComplete, onCancel }: InteractiveS
       // 6. Connect to the session
       await session.connect({ apiKey: token });
       
-      // 7. Start recording and timer
+      // 7. Trigger AI to speak first
+      // Send a brief trigger message to prompt the AI to start the conversation
+      // The AI's instructions tell it to explain the scenario first
+      session.sendMessage('(The user has just joined the conversation. Begin by explaining the scenario to them.)');
+      
+      // 8. Start recording and timer
       mediaRecorder.start(1000);
       startTimeRef.current = Date.now();
       
