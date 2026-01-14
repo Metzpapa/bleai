@@ -19,7 +19,7 @@ import {
 
 interface InteractiveScenarioProps {
   task: Task;
-  onComplete: (recordingBlob: Blob, conversationLog: ConversationMessage[]) => void;
+  onComplete: (videoBlob: Blob, audioBlob: Blob, conversationLog: ConversationMessage[]) => void;
   onCancel: () => void;
 }
 
@@ -31,12 +31,23 @@ interface ConversationMessage {
 
 type ScenarioPhase = 'intro' | 'connecting' | 'conversation' | 'ending';
 
-const getSupportedMimeType = () => {
+const getSupportedVideoMimeType = () => {
   if (typeof MediaRecorder === 'undefined') return '';
   const types = [
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
     'video/webm',
+  ];
+  return types.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+};
+
+const getSupportedAudioMimeType = () => {
+  if (typeof MediaRecorder === 'undefined') return '';
+  const types = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/ogg',
   ];
   return types.find((type) => MediaRecorder.isTypeSupported(type)) || '';
 };
@@ -88,12 +99,18 @@ export function InteractiveScenario({ task, onComplete, onCancel }: InteractiveS
   const [duration, setDuration] = useState(0);
   
   const sessionRef = useRef<RealtimeSession | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const recordingChunksRef = useRef<Blob[]>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const durationIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number>(0);
+  
+  // Video recorder (video + audio for playback)
+  const videoRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoChunksRef = useRef<Blob[]>([]);
+  
+  // Audio recorder (audio-only, compressed, for transcription)
+  const audioRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   
   const character = getScenarioCharacter(task);
   
@@ -119,8 +136,12 @@ export function InteractiveScenario({ task, onComplete, onCancel }: InteractiveS
       streamRef.current = null;
     }
     
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+    if (videoRecorderRef.current && videoRecorderRef.current.state !== 'inactive') {
+      videoRecorderRef.current.stop();
+    }
+    
+    if (audioRecorderRef.current && audioRecorderRef.current.state !== 'inactive') {
+      audioRecorderRef.current.stop();
     }
     
     if (durationIntervalRef.current) {
@@ -187,31 +208,60 @@ export function InteractiveScenario({ task, onComplete, onCancel }: InteractiveS
       });
       attachStreamToPreview();
       
-      // 3. Set up recording
+      // 3. Set up dual-stream recording (video+audio for playback, audio-only for transcription)
       if (typeof MediaRecorder === 'undefined') {
         throw new Error('Recording is not supported in this browser. Please try Chrome or Edge.');
       }
       
-      recordingChunksRef.current = [];
-      const mimeType = getSupportedMimeType();
-      let mediaRecorder: MediaRecorder;
+      videoChunksRef.current = [];
+      audioChunksRef.current = [];
       
+      const videoMimeType = getSupportedVideoMimeType();
+      const audioMimeType = getSupportedAudioMimeType();
+      
+      // Video recorder (video + audio for playback)
+      let videoRecorder: MediaRecorder;
       try {
-        mediaRecorder = mimeType
-          ? new MediaRecorder(stream, { mimeType })
+        videoRecorder = videoMimeType
+          ? new MediaRecorder(stream, { mimeType: videoMimeType })
           : new MediaRecorder(stream);
       } catch (err) {
-        console.error('Failed to start recording:', err);
+        console.error('Failed to start video recording:', err);
         throw new Error('Failed to start recording. Please try a different browser.');
       }
       
-      mediaRecorder.ondataavailable = (e) => {
+      // Audio-only recorder (compressed, for transcription)
+      const audioTracks = stream.getAudioTracks();
+      const audioStream = new MediaStream(audioTracks);
+      
+      let audioRecorder: MediaRecorder;
+      try {
+        audioRecorder = audioMimeType
+          ? new MediaRecorder(audioStream, { 
+              mimeType: audioMimeType,
+              audioBitsPerSecond: 32000, // 32kbps - plenty for speech
+            })
+          : new MediaRecorder(audioStream);
+        console.log('[interactive] Audio recording at', audioMimeType, '32kbps');
+      } catch (err) {
+        console.error('Failed to start audio recording:', err);
+        throw new Error('Failed to start audio recording. Please try a different browser.');
+      }
+      
+      videoRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
-          recordingChunksRef.current.push(e.data);
+          videoChunksRef.current.push(e.data);
         }
       };
       
-      mediaRecorderRef.current = mediaRecorder;
+      audioRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+      
+      videoRecorderRef.current = videoRecorder;
+      audioRecorderRef.current = audioRecorder;
       
       // 4. Create Realtime agent and session
       const agent = new RealtimeAgent({
@@ -273,8 +323,9 @@ export function InteractiveScenario({ task, onComplete, onCancel }: InteractiveS
       // The AI's instructions tell it to explain the scenario first
       session.sendMessage('(The user has just joined the conversation. Begin by explaining the scenario to them.)');
       
-      // 8. Start recording and timer
-      mediaRecorder.start(1000);
+      // 8. Start both recorders and timer
+      videoRecorder.start(1000);
+      audioRecorder.start(1000);
       startTimeRef.current = Date.now();
       
       durationIntervalRef.current = setInterval(() => {
@@ -305,22 +356,51 @@ export function InteractiveScenario({ task, onComplete, onCancel }: InteractiveS
       clearInterval(durationIntervalRef.current);
     }
     
-    // Stop recording and get the blob
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.onstop = () => {
-        const recordingType = mediaRecorderRef.current?.mimeType || 'video/webm';
-        const blob = new Blob(recordingChunksRef.current, { type: recordingType });
+    // Track when both recorders are done
+    let videoStopped = false;
+    let audioStopped = false;
+    let videoBlob: Blob | null = null;
+    let audioBlob: Blob | null = null;
+    
+    const onBothStopped = () => {
+      if (videoStopped && audioStopped && videoBlob && audioBlob) {
+        console.log('[interactive] Video:', (videoBlob.size / 1024 / 1024).toFixed(2), 'MB');
+        console.log('[interactive] Audio:', (audioBlob.size / 1024).toFixed(1), 'KB');
         
         // Stop camera
         if (streamRef.current) {
           streamRef.current.getTracks().forEach(track => track.stop());
         }
         
-        // Call completion handler
-        onComplete(blob, conversationLog);
+        // Call completion handler with both blobs
+        onComplete(videoBlob, audioBlob, conversationLog);
+      }
+    };
+    
+    // Stop video recorder
+    if (videoRecorderRef.current && videoRecorderRef.current.state !== 'inactive') {
+      videoRecorderRef.current.onstop = () => {
+        const recordingType = videoRecorderRef.current?.mimeType || 'video/webm';
+        videoBlob = new Blob(videoChunksRef.current, { type: recordingType });
+        videoStopped = true;
+        onBothStopped();
       };
-      
-      mediaRecorderRef.current.stop();
+      videoRecorderRef.current.stop();
+    } else {
+      videoStopped = true;
+    }
+    
+    // Stop audio recorder
+    if (audioRecorderRef.current && audioRecorderRef.current.state !== 'inactive') {
+      audioRecorderRef.current.onstop = () => {
+        const recordingType = audioRecorderRef.current?.mimeType || 'audio/webm';
+        audioBlob = new Blob(audioChunksRef.current, { type: recordingType });
+        audioStopped = true;
+        onBothStopped();
+      };
+      audioRecorderRef.current.stop();
+    } else {
+      audioStopped = true;
     }
   }, [conversationLog, onComplete]);
   

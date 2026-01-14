@@ -16,17 +16,28 @@ import {
 } from 'lucide-react';
 
 interface VideoRecorderProps {
-  onRecordingComplete: (blob: Blob) => void;
+  onRecordingComplete: (videoBlob: Blob, audioBlob: Blob) => void;
   onCancel: () => void;
   maxDuration?: number; // seconds
 }
 
-const getSupportedMimeType = () => {
+const getSupportedVideoMimeType = () => {
   if (typeof MediaRecorder === 'undefined') return '';
   const types = [
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
     'video/webm',
+  ];
+  return types.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+};
+
+const getSupportedAudioMimeType = () => {
+  if (typeof MediaRecorder === 'undefined') return '';
+  const types = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/ogg',
   ];
   return types.find((type) => MediaRecorder.isTypeSupported(type)) || '';
 };
@@ -37,14 +48,21 @@ export function VideoRecorder({
   maxDuration = 600 // 10 minutes default max
 }: VideoRecorderProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  
+  // Video recorder (video + audio for playback)
+  const videoRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoChunksRef = useRef<Blob[]>([]);
+  
+  // Audio recorder (audio-only, compressed, for transcription)
+  const audioRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   
   const [isInitialized, setIsInitialized] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [recordedVideoBlob, setRecordedVideoBlob] = useState<Blob | null>(null);
+  const [recordedAudioBlob, setRecordedAudioBlob] = useState<Blob | null>(null);
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -109,42 +127,102 @@ export function VideoRecorder({
       return;
     }
     
-    chunksRef.current = [];
-    const mimeType = getSupportedMimeType();
-    let mediaRecorder: MediaRecorder;
+    // Reset chunks
+    videoChunksRef.current = [];
+    audioChunksRef.current = [];
     
+    const videoMimeType = getSupportedVideoMimeType();
+    const audioMimeType = getSupportedAudioMimeType();
+    
+    // Create video recorder (video + audio for playback)
+    let videoRecorder: MediaRecorder;
     try {
-      mediaRecorder = mimeType
-        ? new MediaRecorder(streamRef.current, { mimeType })
+      videoRecorder = videoMimeType
+        ? new MediaRecorder(streamRef.current, { mimeType: videoMimeType })
         : new MediaRecorder(streamRef.current);
     } catch (err) {
-      console.error('Failed to start recording:', err);
+      console.error('Failed to start video recording:', err);
       setError('Failed to start recording. Please try a different browser.');
       return;
     }
     
-    mediaRecorder.ondataavailable = (event) => {
+    // Create audio-only stream for transcription (compressed, smaller file)
+    const audioTracks = streamRef.current.getAudioTracks();
+    const audioStream = new MediaStream(audioTracks);
+    
+    let audioRecorder: MediaRecorder;
+    try {
+      audioRecorder = audioMimeType
+        ? new MediaRecorder(audioStream, { 
+            mimeType: audioMimeType,
+            audioBitsPerSecond: 32000, // 32kbps - plenty for speech, very small files
+          })
+        : new MediaRecorder(audioStream);
+      console.log('[recorder] Audio recording at', audioMimeType, '32kbps');
+    } catch (err) {
+      console.error('Failed to start audio recording:', err);
+      setError('Failed to start audio recording. Please try a different browser.');
+      return;
+    }
+    
+    // Video recorder handlers
+    videoRecorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
-        chunksRef.current.push(event.data);
+        videoChunksRef.current.push(event.data);
       }
     };
     
-    mediaRecorder.onstop = () => {
-      const recordingType = mediaRecorder.mimeType || mimeType || 'video/webm';
-      const blob = new Blob(chunksRef.current, { type: recordingType });
-      const url = URL.createObjectURL(blob);
-      setRecordedBlob(blob);
-      setRecordedUrl(url);
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
-        videoRef.current.src = url;
-        videoRef.current.load();
+    // Audio recorder handlers
+    audioRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        audioChunksRef.current.push(event.data);
       }
     };
     
-    mediaRecorderRef.current = mediaRecorder;
-    mediaRecorder.start(1000); // Collect data every second
+    // Track when both recorders are done
+    let videoStopped = false;
+    let audioStopped = false;
+    let videoBlob: Blob | null = null;
+    let audioBlob: Blob | null = null;
+    
+    const onBothStopped = () => {
+      if (videoStopped && audioStopped && videoBlob && audioBlob) {
+        const url = URL.createObjectURL(videoBlob);
+        setRecordedVideoBlob(videoBlob);
+        setRecordedAudioBlob(audioBlob);
+        setRecordedUrl(url);
+        
+        console.log('[recorder] Video:', (videoBlob.size / 1024 / 1024).toFixed(2), 'MB');
+        console.log('[recorder] Audio:', (audioBlob.size / 1024).toFixed(1), 'KB');
+        
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+          videoRef.current.src = url;
+          videoRef.current.load();
+        }
+      }
+    };
+    
+    videoRecorder.onstop = () => {
+      const recordingType = videoRecorder.mimeType || videoMimeType || 'video/webm';
+      videoBlob = new Blob(videoChunksRef.current, { type: recordingType });
+      videoStopped = true;
+      onBothStopped();
+    };
+    
+    audioRecorder.onstop = () => {
+      const recordingType = audioRecorder.mimeType || audioMimeType || 'audio/webm';
+      audioBlob = new Blob(audioChunksRef.current, { type: recordingType });
+      audioStopped = true;
+      onBothStopped();
+    };
+    
+    // Store refs and start both recorders
+    videoRecorderRef.current = videoRecorder;
+    audioRecorderRef.current = audioRecorder;
+    
+    videoRecorder.start(1000);
+    audioRecorder.start(1000);
     
     setIsRecording(true);
     setDuration(0);
@@ -162,8 +240,14 @@ export function VideoRecorder({
   }, [maxDuration]);
   
   const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
+    if (isRecording) {
+      // Stop both recorders
+      if (videoRecorderRef.current && videoRecorderRef.current.state !== 'inactive') {
+        videoRecorderRef.current.stop();
+      }
+      if (audioRecorderRef.current && audioRecorderRef.current.state !== 'inactive') {
+        audioRecorderRef.current.stop();
+      }
       setIsRecording(false);
       
       if (durationIntervalRef.current) {
@@ -176,7 +260,8 @@ export function VideoRecorder({
     if (recordedUrl) {
       URL.revokeObjectURL(recordedUrl);
     }
-    setRecordedBlob(null);
+    setRecordedVideoBlob(null);
+    setRecordedAudioBlob(null);
     setRecordedUrl(null);
     setDuration(0);
     
@@ -190,10 +275,10 @@ export function VideoRecorder({
   }, [recordedUrl]);
   
   const handleSubmit = useCallback(() => {
-    if (recordedBlob) {
-      onRecordingComplete(recordedBlob);
+    if (recordedVideoBlob && recordedAudioBlob) {
+      onRecordingComplete(recordedVideoBlob, recordedAudioBlob);
     }
-  }, [recordedBlob, onRecordingComplete]);
+  }, [recordedVideoBlob, recordedAudioBlob, onRecordingComplete]);
   
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60);

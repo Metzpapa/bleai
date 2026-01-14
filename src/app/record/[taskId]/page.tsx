@@ -21,6 +21,7 @@ export default function RecordPage({ params }: RecordPageProps) {
   
   const [task, setTask] = useState<Task | null>(null);
   const [videoBlob, setVideoBlob] = useState<Blob | null>(null);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [conversationLog, setConversationLog] = useState<ConversationMessage[] | null>(null);
   
   useEffect(() => {
@@ -32,24 +33,26 @@ export default function RecordPage({ params }: RecordPageProps) {
     }
   }, [taskId, tasks, router]);
   
-  // Standard recording complete handler
-  const handleRecordingComplete = (blob: Blob) => {
-    setVideoBlob(blob);
+  // Standard recording complete handler (video + audio blobs)
+  const handleRecordingComplete = (video: Blob, audio: Blob) => {
+    setVideoBlob(video);
+    setAudioBlob(audio);
     
     // Create a new session
     const sessionId = `session-${Date.now()}`;
     setCurrentSession({
       id: sessionId,
       taskId,
-      videoBlob: blob,
+      videoBlob: video,
       status: 'processing',
       createdAt: new Date(),
     });
   };
   
-  // Interactive scenario complete handler
-  const handleInteractiveComplete = (blob: Blob, log: ConversationMessage[]) => {
-    setVideoBlob(blob);
+  // Interactive scenario complete handler (video + audio + conversation log)
+  const handleInteractiveComplete = (video: Blob, audio: Blob, log: ConversationMessage[]) => {
+    setVideoBlob(video);
+    setAudioBlob(audio);
     setConversationLog(log);
     
     // Create a new session with conversation log
@@ -57,7 +60,7 @@ export default function RecordPage({ params }: RecordPageProps) {
     setCurrentSession({
       id: sessionId,
       taskId,
-      videoBlob: blob,
+      videoBlob: video,
       conversationLog: log,
       status: 'processing',
       createdAt: new Date(),
@@ -142,11 +145,13 @@ export default function RecordPage({ params }: RecordPageProps) {
         ) : (
           <ProcessingView
             videoBlob={videoBlob}
+            audioBlob={audioBlob!}
             task={task}
             conversationLog={conversationLog || undefined}
             onComplete={handleAnalysisComplete}
             onRetry={() => {
               setVideoBlob(null);
+              setAudioBlob(null);
               setConversationLog(null);
               setCurrentSession(null);
             }}
