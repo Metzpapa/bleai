@@ -33,11 +33,17 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    console.log('[transcribe] Received file:', audioFile.name, 'size:', audioFile.size, 'type:', audioFile.type);
+    const fileSizeMB = (audioFile.size / 1024 / 1024).toFixed(2);
+    console.log('[transcribe] Received file:', audioFile.name, 'size:', fileSizeMB, 'MB', 'type:', audioFile.type);
+    
+    // Determine file extension and type based on what was sent
+    const isWav = audioFile.name.endsWith('.wav') || audioFile.type === 'audio/wav';
+    const fileName = isWav ? 'audio.wav' : 'audio.webm';
+    const mimeType = isWav ? 'audio/wav' : 'audio/webm';
     
     // Convert to format OpenAI expects using their helper (works better in serverless)
     const audioBuffer = Buffer.from(await audioFile.arrayBuffer());
-    const file = await toFile(audioBuffer, 'audio.webm', { type: 'audio/webm' });
+    const file = await toFile(audioBuffer, fileName, { type: mimeType });
     
     console.log('[transcribe] Sending to Whisper...');
     
