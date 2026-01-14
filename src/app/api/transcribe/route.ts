@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import OpenAI from 'openai';
+import OpenAI, { toFile } from 'openai';
+
+// Vercel serverless function config
+export const maxDuration = 60; // Allow up to 60 seconds for transcription (requires Pro plan, otherwise 10s)
 
 // Lazy initialization to avoid build-time errors
 let openai: OpenAI | null = null;
@@ -30,11 +33,13 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Convert to format OpenAI expects
-    const audioBuffer = Buffer.from(await audioFile.arrayBuffer());
+    console.log('[transcribe] Received file:', audioFile.name, 'size:', audioFile.size, 'type:', audioFile.type);
     
-    // Create a File object for OpenAI
-    const file = new File([audioBuffer], 'audio.webm', { type: 'audio/webm' });
+    // Convert to format OpenAI expects using their helper (works better in serverless)
+    const audioBuffer = Buffer.from(await audioFile.arrayBuffer());
+    const file = await toFile(audioBuffer, 'audio.webm', { type: 'audio/webm' });
+    
+    console.log('[transcribe] Sending to Whisper...');
     
     // Transcribe with word-level timestamps
     const transcription = await client.audio.transcriptions.create({
@@ -43,6 +48,8 @@ export async function POST(request: NextRequest) {
       response_format: 'verbose_json',
       timestamp_granularities: ['word'],
     });
+    
+    console.log('[transcribe] Success, text length:', transcription.text?.length);
     
     // Format response
     const result = {
