@@ -62,52 +62,34 @@ export function ProcessingView({ videoBlob, task, conversationLog, onComplete, o
     const process = async () => {
       try {
         // Start transcription immediately (in parallel with frame extraction)
-        let transcriptionPromise: Promise<Transcription | null>;
+        // Always use Whisper for transcription - it's more reliable than Realtime API transcripts
+        updateStep('transcription', { status: 'processing' });
         
-        if (isInteractive) {
-          // For interactive scenarios, use conversation log directly
-          // NO word-level estimation - only accurate turn-level timestamps
-          updateStep('transcription', { status: 'processing' });
+        const transcriptionPromise = (async (): Promise<Transcription | null> => {
+          const formData = new FormData();
+          formData.append('audio', videoBlob, 'recording.webm');
           
-          if (!conversationLog || conversationLog.length === 0) {
-            console.warn('[processing] interactive session has no conversation log; skipping Whisper');
+          const transcribeResponse = await fetch('/api/transcribe', {
+            method: 'POST',
+            body: formData,
+          });
+          
+          if (!transcribeResponse.ok) {
+            throw new Error('Transcription failed');
           }
-
-          const transcriptionData = {
-            text: (conversationLog ?? []).map(msg => 
-              `${msg.role === 'assistant' ? '[AI]' : '[User]'}: ${msg.content}`
-            ).join('\n'),
-            words: [], // No word-level data - we only have turn-level timestamps
-            turns: conversationLog ?? [], // Pass the actual turn data
-          };
+          
+          const transcriptionData = await transcribeResponse.json();
+          
+          if (cancelled) return null;
+          
+          // For interactive scenarios, also include the conversation log for role info
+          if (isInteractive && conversationLog && conversationLog.length > 0) {
+            transcriptionData.turns = conversationLog;
+          }
           
           updateStep('transcription', { status: 'complete' });
-          transcriptionPromise = Promise.resolve(transcriptionData);
-        } else {
-          // For standard recordings, use Whisper
-          updateStep('transcription', { status: 'processing' });
-          
-          transcriptionPromise = (async () => {
-            const formData = new FormData();
-            formData.append('audio', videoBlob, 'recording.webm');
-            
-            const transcribeResponse = await fetch('/api/transcribe', {
-              method: 'POST',
-              body: formData,
-            });
-            
-            if (!transcribeResponse.ok) {
-              throw new Error('Transcription failed');
-            }
-            
-            const transcriptionData = await transcribeResponse.json();
-            
-            if (cancelled) return null;
-            
-            updateStep('transcription', { status: 'complete' });
-            return transcriptionData;
-          })();
-        }
+          return transcriptionData;
+        })();
         
         // Extract contact sheets in parallel
         updateStep('frames', { status: 'processing', progress: 0 });
